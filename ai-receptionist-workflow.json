@@ -1,0 +1,603 @@
+{
+  "name": "Hospital AI Receptionist",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## Hospital AI Receptionist\n\n**Endpoint:** `POST /webhook/hospital-receptionist`\n```json\n{ \"sessionId\": \"abc123\", \"message\": \"I need a cardiologist tomorrow\", \"channel\": \"web\", \"phone\": \"+919876543210\" }\n```\nReturns `{ \"reply\": \"...\", \"sessionId\": \"...\", \"escalated\": false }`\n\n**Setup**\n1. Run `schema.sql` on a `hospital` database\n2. Postgres credential -> that DB (host `postgres` inside Docker)\n3. Anthropic credential\n4. Edit **Input + Hospital Config**: name, address, numbers\n5. Replace the sample doctors, slots and hospital_info\n\nRed-flag emergencies skip the AI entirely and get a fixed safety reply.",
+        "height": 480,
+        "width": 440,
+        "color": 4
+      },
+      "id": "a1f0c001-0000-4000-8000-000000000001",
+      "name": "Setup Notes",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -520,
+        -140
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "hospital-receptionist",
+        "responseMode": "responseNode",
+        "options": {
+          "allowedOrigins": "*"
+        }
+      },
+      "id": "a1f0c001-0000-4000-8000-000000000002",
+      "name": "Incoming Message",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        200
+      ],
+      "webhookId": "5b0f3a52-7c1e-4d8a-9a51-2f6c1d0e8b11"
+    },
+    {
+      "parameters": {
+        "mode": "manual",
+        "assignments": {
+          "assignments": [
+            {
+              "id": "c01",
+              "name": "sessionId",
+              "value": "={{ $json.body.sessionId || $json.body.phone || $execution.id }}",
+              "type": "string"
+            },
+            {
+              "id": "c02",
+              "name": "message",
+              "value": "={{ String($json.body.message || '').trim().slice(0, 2000) || 'Hi' }}",
+              "type": "string"
+            },
+            {
+              "id": "c03",
+              "name": "channel",
+              "value": "={{ $json.body.channel || 'web' }}",
+              "type": "string"
+            },
+            {
+              "id": "c04",
+              "name": "phone",
+              "value": "={{ $json.body.phone || '' }}",
+              "type": "string"
+            },
+            {
+              "id": "c05",
+              "name": "hospitalName",
+              "value": "City Care Hospital",
+              "type": "string"
+            },
+            {
+              "id": "c06",
+              "name": "hospitalAddress",
+              "value": "",
+              "type": "string"
+            },
+            {
+              "id": "c07",
+              "name": "emergencyNumber",
+              "value": "",
+              "type": "string"
+            },
+            {
+              "id": "c08",
+              "name": "frontDeskNumber",
+              "value": "",
+              "type": "string"
+            },
+            {
+              "id": "c09",
+              "name": "callbackPromise",
+              "value": "within 30 minutes during OPD hours",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "a1f0c001-0000-4000-8000-000000000003",
+      "name": "Input + Hospital Config",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        220,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "rf01",
+              "leftValue": "={{ $json.message.toLowerCase() }}",
+              "rightValue": "chest pain|heart attack|can'?t breathe|cannot breathe|not breathing|difficulty breathing|breathless|unconscious|not responding|fainted|collapsed|seizure|having fits|stroke|face drooping|slurred speech|severe bleeding|bleeding heavily|won'?t stop bleeding|suicid|kill myself|end my life|overdose|poison|swallowed|choking|anaphyla|severe burn|road accident|head injury|labou?r pain|water broke",
+              "operator": {
+                "type": "string",
+                "operation": "regex"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "a1f0c001-0000-4000-8000-000000000004",
+      "name": "Red-Flag Emergency Check",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        440,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO escalations (session_id, channel, type, urgency, phone, summary)\nVALUES ($1, $2, 'emergency', 'high', NULLIF(RIGHT(REGEXP_REPLACE($3, '[^0-9]', '', 'g'), 10), ''), $4)\nRETURNING id;",
+        "options": {
+          "queryReplacement": "={{ [ $json.sessionId, $json.channel, $json.phone, 'Red-flag keywords in message: ' + $json.message ] }}"
+        }
+      },
+      "id": "a1f0c001-0000-4000-8000-000000000005",
+      "name": "Log Emergency",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        680,
+        40
+      ],
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput",
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_POSTGRES_CREDENTIAL_ID",
+          "name": "Hospital DB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ reply: 'This could be a medical emergency. Please call ' + ($('Input + Hospital Config').item.json.emergencyNumber ? $('Input + Hospital Config').item.json.emergencyNumber + ' (our 24x7 emergency desk) or ' : '') + '108 / 112 for an ambulance right now, or come straight to our Emergency department' + ($('Input + Hospital Config').item.json.hospitalAddress ? ' at ' + $('Input + Hospital Config').item.json.hospitalAddress : '') + ', which is open 24/7. Please do not wait for an appointment. If this is not happening right now, reply \"not an emergency\" and I will help you book a visit.', sessionId: $('Input + Hospital Config').item.json.sessionId, escalated: true }) }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "a1f0c001-0000-4000-8000-000000000006",
+      "name": "Respond: Emergency",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        900,
+        40
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $json.message }}",
+        "options": {
+          "systemMessage": "=You are the AI front-desk receptionist for {{ $('Input + Hospital Config').item.json.hospitalName }}. You help patients over chat and phone: booking, rescheduling and cancelling OPD appointments, answering questions about the hospital, and routing everything else to the right person.\n\nCurrent date and time: {{ $now.setZone('Asia/Kolkata').toFormat('cccc, dd LLL yyyy, hh:mm a') }} IST\nChannel: {{ $('Input + Hospital Config').item.json.channel }}\nSession ID: {{ $('Input + Hospital Config').item.json.sessionId }}\nPatient phone from channel: {{ $('Input + Hospital Config').item.json.phone || 'not provided, ask for it when needed' }}\nEmergency desk: {{ $('Input + Hospital Config').item.json.emergencyNumber || 'not configured, use 108 / 112' }}\nFront desk: {{ $('Input + Hospital Config').item.json.frontDeskNumber || 'not configured, do not quote a number' }}\nAddress: {{ $('Input + Hospital Config').item.json.hospitalAddress || 'not configured, do not quote an address' }}\n\n## Safety rules (these override everything else)\n1. You are not a doctor. Never diagnose, never suggest or dose medicines, never interpret reports or test results. If asked a medical question, say a doctor should answer it and offer to book the right specialist.\n2. If the patient describes anything that could be an emergency (chest pain, trouble breathing, stroke signs, heavy bleeding, unconsciousness, seizures, serious injury, poisoning or overdose, suicidal thoughts, pregnancy emergencies, a very unwell infant), stop what you are doing. Tell them to call the emergency desk or 112 / 108, or to come straight to Emergency (open 24/7), then log it with escalate_to_staff (type emergency, urgency high).\n3. Only state doctors, departments, fees, timings and slots that came back from your tools. If the tools don't have it, say the front desk will confirm and log a callback. Never make up a slot, fee, doctor or reference code.\n4. Privacy: before you share any existing appointment, verify BOTH the mobile number and the date of birth with lookup_appointments. Never reveal another patient's details.\n\n## Booking: get the patient to a confirmed slot in as few messages as possible\n1. Find out what they need: a department or doctor, and a preferred day. If they only describe symptoms, pick the most likely department (General Medicine if unsure) and tell them in one line which one and why. Use get_hospital_info if you need the list of departments.\n2. Call find_available_slots and offer the 2-3 soonest options that fit. Don't read out the whole list.\n3. Once they pick a slot, ask for everything still missing in one message: full name, mobile number, date of birth, and reason for the visit.\n4. Read the details back in one line and ask them to confirm. Only call book_appointment after they say yes.\n5. When it's booked, give the reference code, doctor, department, date and time, and fee, and add: please arrive 15 minutes early with a photo ID and any previous reports. If the status is slot_unavailable, apologise and offer the next open slots straight away.\n\n## Reschedule and cancel\n- Reschedule: verify with lookup_appointments, book the new slot first, then cancel the old one by its reference code. Confirm both.\n- Cancel: you need the reference code and mobile number (use lookup_appointments if they don't have the code). Before cancelling, offer to move the appointment instead.\n\n## Hand off to staff with escalate_to_staff when\n- they ask for a person, want to complain, or are upset\n- billing, insurance or TPA, admissions, reports or medical records, or anything else your tools can't do\n- a tool fails twice in a row\nThen tell them the front desk will call them back on their number {{ $('Input + Hospital Config').item.json.callbackPromise }}.\n\n## Style\n- Warm, calm and professional. Keep replies to 1-4 short sentences, and ask one question at a time unless you're collecting booking details.\n- Reply in the patient's language (English, Hindi, Telugu or whatever they write in).\n- Plain text only, no markdown or tables. Replies may be read aloud or sent over WhatsApp.\n- End every reply with a clear next step.",
+          "maxIterations": 10
+        }
+      },
+      "id": "a1f0c001-0000-4000-8000-000000000007",
+      "name": "AI Receptionist",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.9,
+      "position": [
+        720,
+        320
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "id",
+          "value": "claude-sonnet-5"
+        },
+        "options": {
+          "maxTokensToSample": 1024
+        }
+      },
+      "id": "a1f0c001-0000-4000-8000-000000000008",
+      "name": "Claude",
+      "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
+      "typeVersion": 1.3,
+      "position": [
+        440,
+        560
+      ],
+      "credentials": {
+        "anthropicApi": {
+          "id": "REPLACE_ANTHROPIC_CREDENTIAL_ID",
+          "name": "Anthropic account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sessionIdType": "customKey",
+        "sessionKey": "={{ $('Input + Hospital Config').item.json.sessionId }}",
+        "tableName": "receptionist_chat_histories",
+        "contextWindowLength": 20
+      },
+      "id": "a1f0c001-0000-4000-8000-000000000009",
+      "name": "Conversation Memory",
+      "type": "@n8n/n8n-nodes-langchain.memoryPostgresChat",
+      "typeVersion": 1.3,
+      "position": [
+        600,
+        560
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_POSTGRES_CREDENTIAL_ID",
+          "name": "Hospital DB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "descriptionType": "manual",
+        "toolDescription": "Returns hospital information: the list of active departments, OPD hours, address, parking, what to bring, payment, insurance, lab, visiting hours and pharmacy. Call this before answering any question about the hospital.",
+        "operation": "executeQuery",
+        "query": "SELECT 'departments' AS topic, STRING_AGG(DISTINCT department, ', ') AS content FROM doctors WHERE is_active\nUNION ALL\nSELECT topic, content FROM hospital_info;",
+        "options": {}
+      },
+      "id": "a1f0c001-0000-4000-8000-000000000010",
+      "name": "get_hospital_info",
+      "type": "n8n-nodes-base.postgresTool",
+      "typeVersion": 2.6,
+      "position": [
+        760,
+        560
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_POSTGRES_CREDENTIAL_ID",
+          "name": "Hospital DB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "descriptionType": "manual",
+        "toolDescription": "Finds open appointment slots. Filter by department and/or doctor name (partial match is fine; pass an empty string to skip a filter) and an optional earliest date. Returns up to 8 of the soonest slots with slot_id, doctor, department, qualification, languages, slot_time and consultation_fee. An empty result means nothing matched, so try without the date or doctor filter.",
+        "operation": "executeQuery",
+        "query": "SELECT s.id AS slot_id, d.full_name AS doctor, d.department, d.qualification, d.languages,\n       TO_CHAR(s.start_time AT TIME ZONE 'Asia/Kolkata', 'Dy DD Mon YYYY, HH12:MI AM') AS slot_time,\n       d.consultation_fee\nFROM slots s\nJOIN doctors d ON d.id = s.doctor_id\nWHERE s.is_booked = FALSE\n  AND d.is_active\n  AND s.start_time > NOW() + INTERVAL '30 minutes'\n  AND ($1 = '' OR d.department ILIKE '%' || $1 || '%')\n  AND ($2 = '' OR d.full_name ILIKE '%' || $2 || '%')\n  AND s.start_time >= COALESCE(NULLIF($3, '')::date::timestamp AT TIME ZONE 'Asia/Kolkata', NOW())\nORDER BY s.start_time\nLIMIT 8;",
+        "options": {
+          "queryReplacement": "={{ [ $fromAI('department', 'Department to filter by, e.g. Cardiology. Empty string for any department.', 'string', ''), $fromAI('doctor_name', 'Doctor name or part of it. Empty string for any doctor.', 'string', ''), $fromAI('from_date', 'Earliest date the patient wants, format YYYY-MM-DD. Empty string for the soonest available.', 'string', '') ] }}"
+        }
+      },
+      "id": "a1f0c001-0000-4000-8000-000000000011",
+      "name": "find_available_slots",
+      "type": "n8n-nodes-base.postgresTool",
+      "typeVersion": 2.6,
+      "position": [
+        920,
+        560
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_POSTGRES_CREDENTIAL_ID",
+          "name": "Hospital DB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "descriptionType": "manual",
+        "toolDescription": "Books a slot. Call ONLY after the patient has confirmed the read-back details. Needs slot_id from find_available_slots, full name, mobile number, date of birth (YYYY-MM-DD) and reason. Returns status booked (with reference_code, doctor, department, slot_time, consultation_fee) or slot_unavailable.",
+        "operation": "executeQuery",
+        "query": "WITH slot AS (\n  UPDATE slots SET is_booked = TRUE\n  WHERE id = $1::int AND is_booked = FALSE AND start_time > NOW()\n  RETURNING id, doctor_id, start_time\n), pat AS (\n  INSERT INTO patients (full_name, phone, date_of_birth)\n  SELECT INITCAP(TRIM($2)), RIGHT(REGEXP_REPLACE($3, '[^0-9]', '', 'g'), 10), $4::date\n  WHERE EXISTS (SELECT 1 FROM slot)\n  ON CONFLICT (phone, full_name) DO UPDATE SET date_of_birth = EXCLUDED.date_of_birth\n  RETURNING id\n), appt AS (\n  INSERT INTO appointments (reference_code, slot_id, doctor_id, patient_id, reason, channel, session_id)\n  SELECT 'APT-' || UPPER(SUBSTR(MD5(RANDOM()::text || CLOCK_TIMESTAMP()::text), 1, 6)), slot.id, slot.doctor_id, pat.id, $5, $6, $7\n  FROM slot, pat\n  RETURNING reference_code, doctor_id\n)\nSELECT\n  CASE WHEN EXISTS (SELECT 1 FROM appt) THEN 'booked' ELSE 'slot_unavailable' END AS status,\n  (SELECT reference_code FROM appt) AS reference_code,\n  (SELECT d.full_name FROM appt JOIN doctors d ON d.id = appt.doctor_id) AS doctor,\n  (SELECT d.department FROM appt JOIN doctors d ON d.id = appt.doctor_id) AS department,\n  (SELECT d.consultation_fee FROM appt JOIN doctors d ON d.id = appt.doctor_id) AS consultation_fee,\n  (SELECT TO_CHAR(start_time AT TIME ZONE 'Asia/Kolkata', 'Dy DD Mon YYYY, HH12:MI AM') FROM slot) AS slot_time;",
+        "options": {
+          "queryReplacement": "={{ [ $fromAI('slot_id', 'slot_id of the chosen slot, from find_available_slots', 'number'), $fromAI('full_name', 'Patient full name', 'string'), $fromAI('phone', 'Patient mobile number', 'string'), $fromAI('date_of_birth', 'Patient date of birth, format YYYY-MM-DD', 'string'), $fromAI('reason', 'Short reason for the visit in the patient own words', 'string'), $('Input + Hospital Config').item.json.channel, $('Input + Hospital Config').item.json.sessionId ] }}"
+        }
+      },
+      "id": "a1f0c001-0000-4000-8000-000000000012",
+      "name": "book_appointment",
+      "type": "n8n-nodes-base.postgresTool",
+      "typeVersion": 2.6,
+      "position": [
+        1080,
+        560
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_POSTGRES_CREDENTIAL_ID",
+          "name": "Hospital DB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "descriptionType": "manual",
+        "toolDescription": "Looks up a patient's upcoming confirmed appointments. Needs BOTH mobile number and date of birth (YYYY-MM-DD) for identity verification. An empty result means no match, so do not reveal whether the number exists.",
+        "operation": "executeQuery",
+        "query": "SELECT a.reference_code, p.full_name AS patient, d.full_name AS doctor, d.department,\n       TO_CHAR(s.start_time AT TIME ZONE 'Asia/Kolkata', 'Dy DD Mon YYYY, HH12:MI AM') AS slot_time, a.status\nFROM appointments a\nJOIN patients p ON p.id = a.patient_id\nJOIN slots s ON s.id = a.slot_id\nJOIN doctors d ON d.id = a.doctor_id\nWHERE p.phone = RIGHT(REGEXP_REPLACE($1, '[^0-9]', '', 'g'), 10)\n  AND p.date_of_birth = $2::date\n  AND a.status = 'confirmed'\n  AND s.start_time > NOW()\nORDER BY s.start_time;",
+        "options": {
+          "queryReplacement": "={{ [ $fromAI('phone', 'Patient mobile number', 'string'), $fromAI('date_of_birth', 'Patient date of birth, format YYYY-MM-DD', 'string') ] }}"
+        }
+      },
+      "id": "a1f0c001-0000-4000-8000-000000000013",
+      "name": "lookup_appointments",
+      "type": "n8n-nodes-base.postgresTool",
+      "typeVersion": 2.6,
+      "position": [
+        1240,
+        560
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_POSTGRES_CREDENTIAL_ID",
+          "name": "Hospital DB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "descriptionType": "manual",
+        "toolDescription": "Cancels a confirmed appointment and frees its slot. Needs the reference code and the mobile number it was booked with. Returns status cancelled or not_found.",
+        "operation": "executeQuery",
+        "query": "WITH appt AS (\n  UPDATE appointments a SET status = 'cancelled', updated_at = NOW()\n  FROM patients p\n  WHERE a.patient_id = p.id\n    AND a.reference_code = UPPER(TRIM($1))\n    AND p.phone = RIGHT(REGEXP_REPLACE($2, '[^0-9]', '', 'g'), 10)\n    AND a.status = 'confirmed'\n  RETURNING a.slot_id, a.reference_code\n), freed AS (\n  UPDATE slots s SET is_booked = FALSE FROM appt WHERE s.id = appt.slot_id RETURNING s.id\n)\nSELECT CASE WHEN EXISTS (SELECT 1 FROM appt) THEN 'cancelled' ELSE 'not_found' END AS status,\n       (SELECT reference_code FROM appt) AS reference_code,\n       (SELECT COUNT(*) FROM freed) AS slots_released;",
+        "options": {
+          "queryReplacement": "={{ [ $fromAI('reference_code', 'Appointment reference code, e.g. APT-3F9A2C', 'string'), $fromAI('phone', 'Mobile number used for the booking', 'string') ] }}"
+        }
+      },
+      "id": "a1f0c001-0000-4000-8000-000000000014",
+      "name": "cancel_appointment",
+      "type": "n8n-nodes-base.postgresTool",
+      "typeVersion": 2.6,
+      "position": [
+        1400,
+        560
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_POSTGRES_CREDENTIAL_ID",
+          "name": "Hospital DB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "descriptionType": "manual",
+        "toolDescription": "Creates a ticket in the front-desk queue so a human follows up. Use for emergencies, callback requests, requests for a person, complaints, billing or insurance, reports or records, and anything you cannot handle.",
+        "operation": "executeQuery",
+        "query": "INSERT INTO escalations (session_id, channel, type, urgency, patient_name, phone, summary)\nVALUES ($1, $2, $3, $4, NULLIF($5, ''), NULLIF(RIGHT(REGEXP_REPLACE($6, '[^0-9]', '', 'g'), 10), ''), $7)\nRETURNING id AS ticket_id, 'logged' AS status;",
+        "options": {
+          "queryReplacement": "={{ [ $('Input + Hospital Config').item.json.sessionId, $('Input + Hospital Config').item.json.channel, $fromAI('type', 'One of: emergency, callback, human_request, complaint, billing_insurance, reports_records, other', 'string'), $fromAI('urgency', 'One of: high, normal, low', 'string', 'normal'), $fromAI('patient_name', 'Patient name if known, else empty string', 'string', ''), $fromAI('phone', 'Callback mobile number if known, else empty string', 'string', ''), $fromAI('summary', 'One or two sentences a staff member can act on without reading the chat', 'string') ] }}"
+        }
+      },
+      "id": "a1f0c001-0000-4000-8000-000000000015",
+      "name": "escalate_to_staff",
+      "type": "n8n-nodes-base.postgresTool",
+      "typeVersion": 2.6,
+      "position": [
+        1560,
+        560
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_POSTGRES_CREDENTIAL_ID",
+          "name": "Hospital DB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ reply: $json.output, sessionId: $('Input + Hospital Config').item.json.sessionId, escalated: false }) }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "a1f0c001-0000-4000-8000-000000000016",
+      "name": "Respond: Reply",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        1120,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ reply: 'Sorry, I am having trouble right now. Please try again in a minute' + ($('Input + Hospital Config').item.json.frontDeskNumber ? ' or call our front desk on ' + $('Input + Hospital Config').item.json.frontDeskNumber : '') + '. For an emergency, call 108 / 112.', sessionId: $('Input + Hospital Config').item.json.sessionId, escalated: false, error: true }) }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "a1f0c001-0000-4000-8000-000000000017",
+      "name": "Respond: Fallback",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        1120,
+        400
+      ]
+    }
+  ],
+  "connections": {
+    "Incoming Message": {
+      "main": [
+        [
+          {
+            "node": "Input + Hospital Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Input + Hospital Config": {
+      "main": [
+        [
+          {
+            "node": "Red-Flag Emergency Check",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Red-Flag Emergency Check": {
+      "main": [
+        [
+          {
+            "node": "Log Emergency",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "AI Receptionist",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Emergency": {
+      "main": [
+        [
+          {
+            "node": "Respond: Emergency",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Receptionist": {
+      "main": [
+        [
+          {
+            "node": "Respond: Reply",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond: Fallback",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claude": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Receptionist",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Conversation Memory": {
+      "ai_memory": [
+        [
+          {
+            "node": "AI Receptionist",
+            "type": "ai_memory",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "get_hospital_info": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Receptionist",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "find_available_slots": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Receptionist",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "book_appointment": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Receptionist",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "lookup_appointments": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Receptionist",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "cancel_appointment": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Receptionist",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "escalate_to_staff": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Receptionist",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Asia/Kolkata"
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": false
+  }
+}
